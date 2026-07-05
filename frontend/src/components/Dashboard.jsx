@@ -22,6 +22,7 @@ import {
 import { jsPDF } from "jspdf";
 import html2canvas from "html2canvas";
 import KpiCards from "./KpiCards.jsx";
+import RecentTransactions from "./RecentTransactions.jsx";
 
 // Builds the text-based part of the PDF summary (account info + key metrics
 // + top categories/merchants/anomalies), and returns the live jsPDF doc plus
@@ -157,6 +158,13 @@ function buildSummaryPdf({ data, user, filename }) {
     recurring
       .slice(0, 10)
       .forEach((m) => line(`${m.merchant} (${m.type === "income" ? "income" : "expense"})`, money(m.totalSpend)));
+    y += 6;
+  }
+
+  const paymentModes = data.paymentModeBreakdown || [];
+  if (paymentModes.length) {
+    heading("Payment mode breakdown");
+    paymentModes.forEach((m) => line(`${m.mode} (${m.count} txns)`, money(m.amount)));
     y += 6;
   }
 
@@ -345,6 +353,8 @@ export default function Dashboard({ data, onAskAI, user, filename }) {
     incomeDependency = [],
     burnCurve = { cycles: [], average: [] },
     salaryCycleCurve = { cycles: [] },
+    paymentModeBreakdown = [],
+    transactions = [],
   } = data;
 
   const balanceByType = {
@@ -465,6 +475,38 @@ export default function Dashboard({ data, onAskAI, user, filename }) {
           </ResponsiveContainer>
         </ChartCard>
       </div>
+
+      <div className="section-title">How you paid</div>
+      <div className="chart-grid">
+        <ChartCard
+          title="Payment mode breakdown"
+          desc="Money in vs money out through each channel — UPI, NEFT, IMPS, cash, cheque, card, ATM, etc."
+          empty={!paymentModeBreakdown.length}
+        >
+          <ResponsiveContainer width="100%" height={Math.max(160, paymentModeBreakdown.length * 46)}>
+            <BarChart data={paymentModeBreakdown} layout="vertical" margin={{ left: 12, right: 24 }} barCategoryGap="35%" barGap={4}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#dfe7f2" />
+              <XAxis type="number" stroke="#64748b" fontSize={11} tickFormatter={money} />
+              <YAxis type="category" dataKey="mode" stroke="#64748b" fontSize={12} width={70} />
+              <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(value) => money(value)} />
+              <Legend wrapperStyle={{ fontSize: 11 }} />
+              <Bar dataKey="incoming" name="Incoming" fill={COLORS.salary} radius={[0, 6, 6, 0]} maxBarSize={18} />
+              <Bar dataKey="outgoing" name="Outgoing" fill={COLORS.expense} radius={[0, 6, 6, 0]} maxBarSize={18} />
+            </BarChart>
+          </ResponsiveContainer>
+        </ChartCard>
+
+        <ChartCard
+          title="Recent transactions"
+          desc="Your latest activity, most recent first — expand for the full list"
+          empty={!transactions.length}
+        >
+          <RecentTransactions transactions={transactions} />
+        </ChartCard>
+      </div>
+
+
+
 
       <div className="section-title">Cashflow and balance</div>
       <div className="chart-grid">

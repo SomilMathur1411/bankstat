@@ -16,11 +16,16 @@ export async function analyzeFile(file) {
   return res.json();
 }
 
-export async function sendChatMessage(message, analysis) {
+export async function sendChatMessage(message, analysis, userName) {
+  // Only ever send a first name for personalization — never email,
+  // password, or card details, even if a caller passes the whole user
+  // object in by mistake.
+  const firstNameOnly = typeof userName === "string" ? userName.trim().split(" ")[0] : undefined;
+
   const res = await fetch(`${API_BASE}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, analysis }),
+    body: JSON.stringify({ message, analysis, user_name: firstNameOnly }),
   });
 
   if (!res.ok) {

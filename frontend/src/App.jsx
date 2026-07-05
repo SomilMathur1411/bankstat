@@ -6,12 +6,18 @@ import AccountPanel from "./components/AccountPanel.jsx";
 import ChatPanel from "./components/ChatPanel.jsx";
 import { analyzeFile } from "./api.js";
 
-const INITIAL_MESSAGES = [
-  {
-    role: "bot",
-    text: "Hi! I can answer questions about the statement you just uploaded. Ask me about spending, salary, categories, recurring merchants, or anomalies.",
-  },
-];
+function buildInitialMessages(user) {
+  const firstName = user?.name ? user.name.trim().split(" ")[0] : "";
+  const greeting = firstName ? `Hi ${firstName}! ` : "Hi! ";
+  return [
+    {
+      role: "bot",
+      text:
+        greeting +
+        "I can answer questions about the statement you just uploaded. Ask me about spending, salary, categories, recurring merchants, or anomalies.",
+    },
+  ];
+}
 
 function ChatBubbleIcon() {
   return (
@@ -87,8 +93,8 @@ export default function App() {
   const [error, setError] = useState("");
   const [chatOpen, setChatOpen] = useState(false);
   const [view, setView] = useState("dashboard");
-  const [messages, setMessages] = useState(INITIAL_MESSAGES);
   const [user, setUser] = useState(readStoredUser);
+  const [messages, setMessages] = useState(() => buildInitialMessages(user));
   const [insightsTrigger, setInsightsTrigger] = useState(null);
 
   const headerGreeting = useMemo(() => (user ? `Welcome, ${user.name.split(" ")[0]}` : "Secure account"), [user]);
@@ -113,7 +119,7 @@ export default function App() {
     setError("");
     setChatOpen(false);
     setView("dashboard");
-    setMessages(INITIAL_MESSAGES);
+    setMessages(buildInitialMessages(user));
     setInsightsTrigger(null);
   }
 
@@ -155,6 +161,7 @@ export default function App() {
       };
       persistUser(nextUser);
       setUser(nextUser);
+      setMessages(buildInitialMessages(nextUser));
       return "";
     }
 
@@ -163,6 +170,7 @@ export default function App() {
 
     persistUser(existingUser);
     setUser(existingUser);
+    setMessages(buildInitialMessages(existingUser));
     return "";
   }
 
@@ -251,6 +259,7 @@ export default function App() {
               messages={messages}
               setMessages={setMessages}
               onCollapse={() => setView("dashboard")}
+              userName={user?.name}
             />
           </div>
         ) : (
@@ -276,6 +285,7 @@ export default function App() {
             setMessages={setMessages}
             onExpand={expandChatToFullTab}
             autoPrompt={insightsTrigger}
+            userName={user?.name}
           />
         </>
       )}

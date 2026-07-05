@@ -1557,6 +1557,21 @@ button {
 .merchant-amount.income { color: var(--green); }
 .merchant-amount.expense { color: var(--gold); }
 
+.recent-txn-wrap {
+  display: flex;
+  flex-direction: column;
+}
+.recent-txn-list.scrollable {
+  max-height: 360px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.recent-txn-toggle {
+  margin-top: 12px;
+  width: 100%;
+  justify-content: center;
+}
+
 .upload-screen {
   flex: 1;
   display: flex;
