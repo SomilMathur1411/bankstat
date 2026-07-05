@@ -1,10 +1,5 @@
 # SmartHQ — Frontend + API
 
-<img width="1536" height="1024" alt="ChatGPT Image Jul 3, 2026, 07_27_08 PM" src="https://github.com/user-attachments/assets/0b6f511e-78be-46ee-ae28-97f32f32fcb0" />
-
-
-A dashboard frontend for the analysis pipeline in `bankStatementAnalyser.ipynb`, plus a
-FastAPI backend that ports the notebook's pandas logic into a reusable JSON API.
 
 ```
 bankstat/
@@ -54,25 +49,4 @@ auto-detect the header row) and the dashboard renders every chart from the noteb
 - Salary-cycle burn curves (normalized balance + cumulative net flow, with an average
   overlay)
 
-## Where the LLM layer goes
-
-You mentioned you'll wire up the LLM yourself — here's the seam:
-
-- **`backend/main.py` → `answer_from_rules(message, analysis)`**: right now this just
-  pattern-matches the question and answers from the numbers directly. Swap the body of
-  this function (or the call to it in `/api/chat`) for a call to your model, passing
-  `req.analysis` as grounding context and `req.message` as the user's question. The
-  frontend already sends the full analysis JSON with every chat message, so nothing on
-  the client needs to change.
-- **`backend/analyzer.py`**: the "Others" category (see `summary.uncategorizedCount`) is
-  the same AI-fallback hook as notebook cells 24-30 — send the leftover merchants to
-  your model to propose new keyword rules, then merge them into `DEFAULT_RULES`.
-
-## Notes
-
-- All amounts are in the currency implied by the statement (₹ formatting is used in the
-  UI since the sample data is INR — change `KpiCards.jsx` / `Dashboard.jsx` if needed).
-- The backend does not persist uploads; each request is processed in memory and
-  returned as JSON. Add storage/auth before deploying this with real user data.
-- CORS is wide open (`allow_origins=["*"]`) for local development — tighten this before
-  deploying publicly.
+<img width="1536" height="1024" alt="ChatGPT Image Jul 3, 2026, 07_27_08 PM" src="https://github.com/user-attachments/assets/0b6f511e-78be-46ee-ae28-97f32f32fcb0" />
