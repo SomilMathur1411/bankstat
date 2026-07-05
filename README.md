@@ -1,4 +1,4 @@
-# Bank Statement Analyser — Frontend + API
+# SmartHQ — Frontend + API
 
 ![Uploading ChatGPT Image Jul 3, 2026, 07_27_08 PM.png…]()
 
