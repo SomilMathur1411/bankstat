@@ -124,7 +124,35 @@ def clean_statement(df: pd.DataFrame) -> pd.DataFrame:
 # STEP 2: Merchant extraction + categorization
 # ---------------------------------------------------------------------------
 
-_BLACKLIST = {"bkid", "hdfc", "icici", "axis", "okaxis", "hdfcbank", "upi", "bank", "hdfc0merupi"}
+_BLACKLIST = {
+    "bkid", "hdfc", "icici", "axis", "okaxis", "hdfcbank", "upi", "bank", "hdfc0merupi",
+    # Transaction-type / direction words that show up as the FIRST tokens in
+    # NEFT/IMPS/RTGS/cheque narrations (e.g. "NEFT CR-ICIC0SF0002-RYSTAD
+    # ENERGY..."). Without these, extract_merchant's "take the first 3
+    # tokens" rule grabs the transaction metadata instead of the actual
+    # counterparty name that follows it.
+    "neft", "imps", "rtgs", "chq", "cheque", "cts", "clg", "nach", "ecs",
+    "mandate", "sip", "cr", "dr", "dep", "wdl", "txn", "ref", "atm", "pos",
+    "ecom", "dd", "by",
+}
+
+# IFSC codes (4 letters, a literal '0', then 6 more alphanumeric chars, e.g.
+# "icic0sf0002") aren't merchant names — they're routing codes that appear
+# right after CR/DR in bank-transfer narrations.
+_IFSC_RE = re.compile(r"^[a-z]{4}0[a-z0-9]{6}$")
+
+
+def _looks_like_code(token: str) -> bool:
+    """True for IFSC codes, account/reference numbers, and other
+    alphanumeric noise that shouldn't be mistaken for part of a merchant
+    name (e.g. 'icic0sf0002', 'in42605751180658')."""
+    if _IFSC_RE.match(token):
+        return True
+    if token.isdigit() and len(token) >= 6:
+        return True
+    if len(token) >= 10 and any(c.isdigit() for c in token) and any(c.isalpha() for c in token):
+        return True
+    return False
 
 
 def normalize(text: str) -> str:
@@ -138,7 +166,7 @@ def normalize(text: str) -> str:
 def extract_merchant(narration: str) -> str:
     narration = normalize(narration)
     parts = narration.split()
-    cleaned = [p for p in parts if p not in _BLACKLIST]
+    cleaned = [p for p in parts if p not in _BLACKLIST and not _looks_like_code(p)]
     return " ".join(cleaned[:3])
 
 
@@ -167,6 +195,34 @@ def apply_categorization(df: pd.DataFrame, rules: Optional[dict] = None) -> pd.D
     df["merchant_clean"] = df["merchant"].apply(clean_merchant)
     df["category"] = df["merchant"].apply(lambda m: categorize(m, rules))
     return df
+
+
+# ---------------------------------------------------------------------------
+# Payment mode detection — what channel/rail a transaction moved through
+# (UPI, NEFT, IMPS, RTGS, cash, cheque, card/POS, ATM, ECS/mandate, DD).
+# Order matters: more specific keywords are checked before generic ones so
+# e.g. "ATM CASH WITHDRAWAL" is labelled ATM, not Cash.
+# ---------------------------------------------------------------------------
+PAYMENT_MODE_RULES = [
+    ("UPI", ["upi"]),
+    ("IMPS", ["imps"]),
+    ("NEFT", ["neft"]),
+    ("RTGS", ["rtgs"]),
+    ("ATM", ["atm"]),
+    ("Cheque", ["chq", "cheque", "cts-", "clg"]),
+    ("Card", ["pos ", "pos-", "card", "ecom"]),
+    ("Cash", ["cash dep", "cash wdl", "cash deposit", "cash withdrawal", "by cash", "cash"]),
+    ("ECS/Mandate", ["ecs", "nach", "mandate", "sip-"]),
+    ("DD", [" dd ", "demand draft"]),
+]
+
+
+def detect_payment_mode(narration: str) -> str:
+    text = f" {str(narration).lower()} "
+    for mode, keywords in PAYMENT_MODE_RULES:
+        if any(kw in text for kw in keywords):
+            return mode
+    return "Other"
 
 
 # ---------------------------------------------------------------------------
@@ -396,6 +452,7 @@ def run_full_analysis(file_bytes: bytes, filename: str, rules: Optional[dict] = 
         raise AnalysisError("No valid transactions found after cleaning this file.")
 
     df = apply_categorization(df, rules)
+    df["payment_mode"] = df["Narration"].apply(detect_payment_mode)
     # Income/salary detection must run before recurring detection, since
     # detect_recurring uses the resulting income_type to make sure salary is
     # always treated as recurring (see detect_recurring's docstring).
@@ -571,8 +628,51 @@ def run_full_analysis(file_bytes: bytes, filename: str, rules: Optional[dict] = 
             for day, vals in sorted(by_day.items())
         ]
 
+    # ---- Payment mode breakdown (UPI / NEFT / cash / cheque / card / etc.) ----
+    # Split by direction so the chart can show incoming vs outgoing per
+    # channel, instead of collapsing both into one abs() total (which hid
+    # e.g. a channel that's mostly you paying out vs mostly money coming in).
+    mode_in = df[df["amount"] > 0].groupby("payment_mode")["amount"].sum()
+    mode_out = df[df["amount"] < 0].groupby("payment_mode")["amount"].sum().abs()
+    mode_counts = df.groupby("payment_mode").size()
+    mode_total = df["amount"].abs().groupby(df["payment_mode"]).sum().sort_values(ascending=False)
+    payment_mode_breakdown_out = [
+        {
+            "mode": mode,
+            "incoming": _num(mode_in.get(mode, 0)),
+            "outgoing": _num(mode_out.get(mode, 0)),
+            "amount": _num(total),  # combined total, kept for anything still relying on it (e.g. chat/PDF)
+            "count": int(mode_counts.get(mode, 0)),
+        }
+        for mode, total in mode_total.items()
+    ]
+
+    # ---- Full itemized transaction list ----
+    # NOTE: this is the cleaned statement, not the raw upload. It contains
+    # only transaction-level fields (date, counterparty/merchant string as
+    # extracted from the narration, amount, category, income type, running
+    # balance). It never contains the statement holder's name, account
+    # number, or any login/profile data — those live entirely outside this
+    # analysis payload, in the separate `user` object the frontend keeps in
+    # localStorage.
+    transactions_out = [
+        {
+            "date": _d(row["Date"]),
+            "merchant": row["merchant"],
+            "amount": _num(row["amount"]),
+            "category": row["category"],
+            "type": row["income_type"],
+            "mode": row["payment_mode"],
+            "recurring": bool(row.get("recurring", False)),
+            "balance": _num(row["balance"]) if row["balance"] == row["balance"] else None,
+        }
+        for _, row in df.iterrows()
+    ]
+
     payload = {
         "summary": summary,
+        "transactions": transactions_out,
+        "paymentModeBreakdown": payment_mode_breakdown_out,
         "monthlySpend": monthly_spend_out,
         "categoryBreakdown": category_breakdown_out,
         "topCategoriesOverall": top_categories_out,

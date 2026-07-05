@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from typing import Optional
 
 import httpx
 from dotenv import load_dotenv
@@ -41,7 +42,7 @@ app = FastAPI(title="Bank Statement Analyser API")
 # falls back to the rule-based responder below, so the app still works
 # without a key.
 # ---------------------------------------------------------------------------
-GROQ_API_KEY = "your api key here"  # os.environ.get("GROQ_API_KEY")
+GROQ_API_KEY = ""  # os.environ.get("GROQ_API_KEY")
 GROQ_MODEL = "openai/gpt-oss-120b"
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
@@ -84,25 +85,127 @@ async def analyze(file: UploadFile = File(...)):
 class ChatRequest(BaseModel):
     message: str
     analysis: dict
+    # First name only, for a personalised greeting/tone. Never send email,
+    # password, or saved card details here — those aren't needed to answer
+    # questions about a statement and shouldn't leave the browser.
+    user_name: Optional[str] = None
+    # Optional short bio the user wrote about themselves (via the Account
+    # tab), used purely to make the assistant's tone/framing feel more
+    # personal — e.g. "freelancer, irregular income" vs "salaried, saving
+    # for a house". This is user-authored text meant for exactly this
+    # purpose, unlike name/email/cards.
+    user_bio: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
     reply: str
 
 
-def build_analysis_context(analysis: dict) -> str:
-    """Trim the full analysis payload down to what the LLM actually needs."""
+# Hard cap on how many raw transaction rows we'll ever forward to the LLM
+# for a single question. This used to be 1500 (basically "send everything"),
+# which is what was blowing past Groq's payload limit on any statement with
+# real volume. Now we retrieve only what's relevant to the question instead
+# of trying to fit the whole statement in every request.
+MAX_TRANSACTIONS_FOR_AI = 80
+RECENT_FALLBACK_COUNT = 20
+
+_MONTH_LOOKUP = {}
+for _i in range(1, 13):
+    _MONTH_LOOKUP[__import__("calendar").month_name[_i].lower()] = _i
+    _MONTH_LOOKUP[__import__("calendar").month_abbr[_i].lower()] = _i
+
+
+def _tokenize(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", str(text).lower()))
+
+
+def select_relevant_transactions(message: str, transactions: list, max_n: int = MAX_TRANSACTIONS_FOR_AI) -> list:
+    """Lightweight retrieval: score each transaction against the question's
+    words (merchant, category, mode) and any month/year mentioned, and
+    return the best matches instead of a blind slice of the transaction
+    list.
+
+    This is what actually keeps the Groq payload small — a statement can
+    have thousands of transactions, but a question like "how much did I
+    spend on Swiggy" only needs the handful of rows that match "swiggy",
+    not the entire history. If nothing in the question matches anything
+    (e.g. "give me an overview"), we fall back to a small recent slice just
+    so the model has *some* concrete rows to point to.
+    """
+    q_tokens = _tokenize(message)
+    mentioned_years = {t for t in q_tokens if re.fullmatch(r"20\d{2}", t)}
+    mentioned_months = {_MONTH_LOOKUP[t] for t in q_tokens if t in _MONTH_LOOKUP}
+
+    scored = []
+    for tx in transactions:
+        score = 0
+        merchant_tokens = _tokenize(tx.get("merchant", ""))
+        category_tokens = _tokenize(tx.get("category", ""))
+        mode_tokens = _tokenize(tx.get("mode", ""))
+        type_tokens = _tokenize(tx.get("type", ""))  # e.g. "salary", "alt_income", "expense"
+
+        if q_tokens & merchant_tokens:
+            score += 3
+        if q_tokens & category_tokens:
+            score += 2
+        if q_tokens & mode_tokens:
+            score += 2
+        if q_tokens & type_tokens:
+            score += 3
+
+        date_str = str(tx.get("date") or "")
+        if (mentioned_years or mentioned_months) and re.match(r"\d{4}-\d{2}-\d{2}", date_str):
+            year, month = date_str[:4], int(date_str[5:7])
+            if mentioned_years and year in mentioned_years:
+                score += 2
+            if mentioned_months and month in mentioned_months:
+                score += 2
+
+        if score > 0:
+            scored.append((score, tx))
+
+    if not scored:
+        # Nothing matched — question is likely a general one already covered
+        # by the aggregates (summary/categories/recurring/anomalies). Send a
+        # small recent slice for grounding, not the whole statement.
+        return transactions[-RECENT_FALLBACK_COUNT:]
+
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [tx for _, tx in scored[:max_n]]
+
+
+def build_analysis_context(analysis: dict, message: str = "") -> str:
+    """Build the grounding context sent to the LLM.
+
+    This intentionally includes the full cleaned transaction list (date,
+    merchant, amount, category, income type, balance) so the assistant can
+    reference specific transactions, not just pre-aggregated summaries.
+    It never includes the statement holder's name, account number, or any
+    login/profile data — those aren't part of the `analysis` payload at all
+    (see run_full_analysis in analyzer.py) and are kept out of this request.
+    """
     summary = analysis.get("summary", {})
+    transactions = analysis.get("transactions") or []
     top_categories = analysis.get("topCategoriesOverall") or analysis.get("categoryBreakdown") or []
     recurring = analysis.get("recurringMerchants") or []
     anomalies = analysis.get("anomalies", {})
     cycle_summary = analysis.get("cycleSummary") or []
     expense_spikes = analysis.get("expenseSpikes") or []
+    payment_modes = analysis.get("paymentModeBreakdown") or []
+
+    relevant_transactions = select_relevant_transactions(message, transactions)
 
     context = {
         "summary": summary,
+        # Only transactions relevant to this specific question (matched by
+        # merchant/category/mode/date), or a small recent slice if nothing
+        # matched. Keeps the payload small regardless of statement length.
+        "transactions": relevant_transactions,
+        "transactionCountSentToAI": len(relevant_transactions),
+        "totalTransactionCount": len(transactions),
         "topCategories": top_categories[:8],
         "recurringMerchants": recurring[:12],
+        "paymentModeBreakdown": payment_modes,
         "anomalies": {
             "expenseCount": len(anomalies.get("expense", [])),
             "incomeCount": len(anomalies.get("income", [])),
@@ -146,9 +249,26 @@ GROQ_SYSTEM_PROMPT = (
     "someone to look at their bank statement and tell them straight, but kindly, what's "
     "going on. Warm, encouraging, a little informal, never condescending or preachy. "
     "You're on their side, not judging their spending.\n\n"
+    "{name_line}"
+    "{bio_line}"
     "Ground rules:\n"
     "- Use ONLY the statement data given below. Never invent numbers, merchants, or "
     "dates that aren't in it.\n"
+    "- The transaction list below is a RELEVANT SUBSET picked for this question, not "
+    "the full statement — 'totalTransactionCount' shows how many exist in total, and "
+    "'transactionCountSentToAI' shows how many are included here. Rely on the "
+    "pre-computed summary/category/recurring/anomaly figures for totals and trends; "
+    "only use the transaction list to cite specific examples. Don't claim something "
+    "'isn't in the statement' just because it isn't in this subset — say the summary "
+    "figures don't break it down that way, if that's the case.\n"
+    "- You may reference specific transactions (date, merchant, amount, category) from "
+    "the transaction list when it helps answer the question, but don't dump the whole "
+    "list back at them — pull out only what's relevant.\n"
+    "- If a personal bio is given below, use it to shape TONE and FRAMING only (e.g. "
+    "someone who mentioned irregular income might want cushion-focused advice, a student "
+    "might want a simpler breakdown). It's self-reported context, not a verified fact "
+    "about their finances — never treat it as overriding or supplementing the actual "
+    "statement numbers.\n"
     "- Use ₹ for currency.\n"
     "- Talk to them directly ('you', 'your'), like you're sitting next to them looking "
     "at the statement together.\n"
@@ -222,6 +342,14 @@ def answer_from_rules(message: str, analysis: dict) -> str:
         n_inc = len(anoms.get("income", []))
         return f"Found {n_exp} unusual expense event(s) and {n_inc} unusual income event(s)."
 
+    if any(k in q for k in ["upi", "neft", "imps", "rtgs", "cheque", "chq", "payment mode", "transaction mode", "how did i pay", "atm"]):
+        modes = analysis.get("paymentModeBreakdown") or []
+        if modes:
+            lines = ", ".join(f"{m['mode']}: {money(m['amount'])} across {m['count']} txns" for m in modes[:6])
+            top = modes[0]
+            return f"Most of your money moved via {top['mode']} ({money(top['amount'])}). Full breakdown: {lines}."
+        return "No payment mode breakdown is available yet."
+
     if "transaction" in q and ("count" in q or "how many" in q or "number" in q):
         return f"There are {summary.get('transactionCount', 'N/A')} transactions in this statement."
 
@@ -237,8 +365,15 @@ def answer_from_rules(message: str, analysis: dict) -> str:
 async def chat(req: ChatRequest):
     if GROQ_API_KEY:
         try:
-            context = build_analysis_context(req.analysis)
-            system_prompt = GROQ_SYSTEM_PROMPT.format(context=context)
+            context = build_analysis_context(req.analysis, req.message)
+            # Only a first name, if given, is used for personalization — never
+            # email, password, or card details. Those fields simply aren't on
+            # ChatRequest, so there's nothing to accidentally forward here.
+            first_name = (req.user_name or "").strip().split(" ")[0]
+            name_line = f"The user's first name is {first_name}. Use it once or twice, naturally, not in every message.\n\n" if first_name else ""
+            bio = (req.user_bio or "").strip()
+            bio_line = f"The user described themselves like this: \"{bio}\"\n\n" if bio else ""
+            system_prompt = GROQ_SYSTEM_PROMPT.format(name_line=name_line, bio_line=bio_line, context=context)
             reply = await call_groq(system_prompt, req.message)
             return ChatResponse(reply=reply)
         except Exception as e:  # noqa: BLE001
