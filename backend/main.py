@@ -107,8 +107,16 @@ def answer_from_rules(message: str, analysis: dict) -> str:
     if "recurring" in q or "subscription" in q:
         recs = analysis.get("recurringMerchants") or []
         if recs:
-            lines = ", ".join(f"{r['merchant']} ({money(r['totalSpend'])})" for r in recs[:5])
-            return f"Recurring merchants detected: {lines}."
+            income_recs = [r for r in recs if r.get("type") == "income"]
+            expense_recs = [r for r in recs if r.get("type") != "income"]
+            parts = []
+            if income_recs:
+                lines = ", ".join(f"{r['merchant']} ({money(r['totalSpend'])})" for r in income_recs[:3])
+                parts.append(f"Recurring income: {lines}")
+            if expense_recs:
+                lines = ", ".join(f"{r['merchant']} ({money(r['totalSpend'])})" for r in expense_recs[:5])
+                parts.append(f"Recurring expenses: {lines}")
+            return " | ".join(parts) + "."
         return "No clearly recurring merchants were detected."
 
     if "anomal" in q or "unusual" in q or "spike" in q:

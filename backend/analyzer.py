@@ -174,21 +174,38 @@ def apply_categorization(df: pd.DataFrame, rules: Optional[dict] = None) -> pd.D
 # ---------------------------------------------------------------------------
 
 def detect_recurring(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    spend_df = df[df["amount"] < 0].copy()
-    spend_df["spend"] = spend_df["amount"].abs()
-    spend_df["month"] = spend_df["Date"].dt.to_period("M")
+    """Flags recurring transactions.
 
-    if spend_df.empty:
+    NOTE: this used to only look at `amount < 0` (withdrawals), which meant a
+    monthly salary credit — the single most obviously periodic transaction in
+    the whole statement — was never flagged as "recurring" and never showed
+    up in the Recurring Merchants list. Recurrence has nothing to do with the
+    direction of money movement, so we now look at every transaction (income
+    *and* expense) and match on merchant + a rounded absolute amount.
+
+    On top of that, anything already classified as `income_type == "salary"`
+    (see `detect_income_and_cycles`, which requires 3+ months of a consistent
+    amount from the same source) is forced to `recurring = True` even if a
+    raise/bonus means the exact amount doesn't round-match every month.
+    """
+    df = df.copy()
+    txn_df = df.copy()
+    txn_df["abs_amount"] = txn_df["amount"].abs()
+
+    if txn_df.empty:
         df["recurring"] = False
         return df
 
-    spend_df["spend_rounded"] = spend_df["spend"].round(-1)
-    pair_counts = spend_df.groupby(["merchant", "spend_rounded"])["spend"].transform("count")
-    spend_df["recurring"] = pair_counts >= 3
+    txn_df["amount_rounded"] = txn_df["abs_amount"].round(-1)
+    pair_counts = txn_df.groupby(["merchant", "amount_rounded"])["abs_amount"].transform("count")
+    txn_df["recurring"] = pair_counts >= 3
 
     df["recurring"] = False
-    df.loc[spend_df.index, "recurring"] = spend_df["recurring"]
+    df.loc[txn_df.index, "recurring"] = txn_df["recurring"]
+
+    if "income_type" in df.columns:
+        df.loc[df["income_type"] == "salary", "recurring"] = True
+
     return df
 
 
@@ -196,21 +213,28 @@ def recurring_merchants_summary(df: pd.DataFrame) -> list[dict]:
     recurring = df[df.get("recurring", False) == True].copy()  # noqa: E712
     if recurring.empty:
         return []
-    recurring["spend"] = recurring["amount"].abs()
+    recurring["abs_amount"] = recurring["amount"].abs()
     summary = (
         recurring.groupby("merchant")
-        .agg(total_spend=("spend", "sum"), occurrences=("spend", "count"))
-        .sort_values("total_spend", ascending=False)
+        .agg(abs_total=("abs_amount", "sum"), occurrences=("abs_amount", "count"))
+        .sort_values("abs_total", ascending=False)
         .reset_index()
     )
-    return [
-        {
-            "merchant": r["merchant"] or "(unknown)",
-            "totalSpend": round(float(r["total_spend"]), 2),
-            "occurrences": int(r["occurrences"]),
-        }
-        for _, r in summary.head(15).iterrows()
-    ]
+    out = []
+    for _, r in summary.head(15).iterrows():
+        merchant_rows = recurring[recurring["merchant"] == r["merchant"]]
+        # A merchant is "income" if most of its recurring hits were credits
+        # (covers salary as well as any other recurring incoming payment).
+        is_income = (merchant_rows["amount"] > 0).mean() >= 0.5
+        out.append(
+            {
+                "merchant": r["merchant"] or "(unknown)",
+                "totalSpend": round(float(r["abs_total"]), 2),
+                "occurrences": int(r["occurrences"]),
+                "type": "income" if is_income else "expense",
+            }
+        )
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -372,8 +396,11 @@ def run_full_analysis(file_bytes: bytes, filename: str, rules: Optional[dict] = 
         raise AnalysisError("No valid transactions found after cleaning this file.")
 
     df = apply_categorization(df, rules)
-    df = detect_recurring(df)
+    # Income/salary detection must run before recurring detection, since
+    # detect_recurring uses the resulting income_type to make sure salary is
+    # always treated as recurring (see detect_recurring's docstring).
     df, cycle_summary, salary_merchants = detect_income_and_cycles(df)
+    df = detect_recurring(df)
     anomalies_df = detect_anomalies(df)
 
     # ---- KPI summary ----
