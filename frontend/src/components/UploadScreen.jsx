@@ -14,7 +14,7 @@ export default function UploadScreen({ onFileChosen, loading, error }) {
   return (
     <div className="upload-screen">
       <div className="upload-card">
-        <div className="upload-badge">AI-powered financial OS</div>
+      <div className="upload-badge" style={{ display: "none" }}>AI-powered financial OS</div>
         <h1>See your money with clarity.</h1>
         <p className="lede">
           Drop in a bank statement export and instantly unlock a polished dashboard for income,

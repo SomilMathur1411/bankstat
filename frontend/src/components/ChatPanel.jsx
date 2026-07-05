@@ -8,6 +8,53 @@ const SUGGESTIONS = [
   "Any unusual transactions?",
 ];
 
+// Turns **bold** segments into <strong> tags. Deliberately minimal — we only
+// need to support what the assistant is instructed to produce (bold + plain
+// text), not full markdown.
+function renderInline(text, keyPrefix) {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g).filter((p) => p !== "");
+  return parts.map((part, i) =>
+    part.startsWith("**") && part.endsWith("**") ? (
+      <strong key={`${keyPrefix}-b-${i}`}>{part.slice(2, -2)}</strong>
+    ) : (
+      <React.Fragment key={`${keyPrefix}-t-${i}`}>{part}</React.Fragment>
+    )
+  );
+}
+
+// Renders a chat message as paragraphs + bullet lists instead of one flat
+// blob of text with literal "**" and "-" characters. Bullet lines starting
+// with "- " or "* " are grouped into a <ul>; everything else becomes a <p>.
+function renderMessageBody(text) {
+  const lines = text.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+  const blocks = [];
+  let bulletBuffer = [];
+
+  const flushBullets = () => {
+    if (!bulletBuffer.length) return;
+    blocks.push(
+      <ul className="chat-bullet-list" key={`ul-${blocks.length}`}>
+        {bulletBuffer.map((line, i) => (
+          <li key={i}>{renderInline(line.replace(/^[-*]\s+/, ""), `li-${blocks.length}-${i}`)}</li>
+        ))}
+      </ul>
+    );
+    bulletBuffer = [];
+  };
+
+  lines.forEach((line) => {
+    if (/^[-*]\s+/.test(line)) {
+      bulletBuffer.push(line);
+    } else {
+      flushBullets();
+      blocks.push(<p key={`p-${blocks.length}`}>{renderInline(line, `p-${blocks.length}`)}</p>);
+    }
+  });
+  flushBullets();
+
+  return blocks;
+}
+
 function BotIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -85,14 +132,28 @@ export default function ChatPanel({
   onCollapse,
   messages,
   setMessages,
+  autoPrompt,
 }) {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const scrollRef = useRef(null);
+  const lastAutoPromptId = useRef(null);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, open]);
+
+  // Lets a parent (e.g. the "Get AI insights" button on the dashboard) open
+  // this panel and have a message auto-sent, without duplicating the send
+  // logic. Each autoPrompt carries a unique id so the same text can be
+  // re-triggered on a later click.
+  useEffect(() => {
+    if (autoPrompt && autoPrompt.id !== lastAutoPromptId.current) {
+      lastAutoPromptId.current = autoPrompt.id;
+      handleSend(autoPrompt.text);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoPrompt]);
 
   async function handleSend(text) {
     const message = (text ?? input).trim();
@@ -125,7 +186,7 @@ export default function ChatPanel({
           </div>
           <div>
             <div className="chat-header-title">Statement Assistant</div>
-            <span className="chat-header-badge">rule-based • LLM coming soon</span>
+            <span className="chat-header-badge">AI-powered • Groq</span>
           </div>
         </div>
         <div className="chat-header-buttons">
@@ -150,7 +211,7 @@ export default function ChatPanel({
       <div className="chat-messages" ref={scrollRef}>
         {messages.map((m, i) => (
           <div key={i} className={`chat-bubble ${m.role}`}>
-            {m.text}
+            {m.role === "bot" ? renderMessageBody(m.text) : m.text}
           </div>
         ))}
         {busy && <div className="chat-bubble bot">Thinking…</div>}

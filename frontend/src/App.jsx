@@ -89,6 +89,7 @@ export default function App() {
   const [view, setView] = useState("dashboard");
   const [messages, setMessages] = useState(INITIAL_MESSAGES);
   const [user, setUser] = useState(readStoredUser);
+  const [insightsTrigger, setInsightsTrigger] = useState(null);
 
   const headerGreeting = useMemo(() => (user ? `Welcome, ${user.name.split(" ")[0]}` : "Secure account"), [user]);
 
@@ -113,11 +114,24 @@ export default function App() {
     setChatOpen(false);
     setView("dashboard");
     setMessages(INITIAL_MESSAGES);
+    setInsightsTrigger(null);
   }
 
   function expandChatToFullTab() {
     setChatOpen(false);
     setView("assistant");
+  }
+
+  function handleAskAI(customPrompt) {
+    setChatOpen(true);
+    setInsightsTrigger({
+      id: Date.now(),
+      text:
+        customPrompt ||
+        "Give me your top AI insights on this statement — cover spending trends, " +
+          "salary/income pattern, recurring merchants, and any anomalies worth flagging. " +
+          "Keep it to a short bullet list.",
+    });
   }
 
   function handleAuthSubmit(payload) {
@@ -172,7 +186,7 @@ export default function App() {
           <div className="brand">
             <div className="brand-mark">₹</div>
             <div>
-              <div className="brand-name">Bank Statement Analyser</div>
+              <div className="brand-name">SmartHQ</div>
               <div className="brand-sub">Secure profile · Saved cards · AI insights</div>
             </div>
           </div>
@@ -188,7 +202,7 @@ export default function App() {
         <div className="brand">
           <div className="brand-mark">₹</div>
           <div>
-            <div className="brand-name">Bank Statement Analyser</div>
+            <div className="brand-name">SmartHQ</div>
             <div className="brand-sub">Spending · Income · Anomalies</div>
           </div>
         </div>
@@ -230,7 +244,7 @@ export default function App() {
           <UploadScreen onFileChosen={handleFileChosen} loading={loading} error={error} />
         ) : view === "assistant" ? (
           <div className="assistant-view">
-            <div className="assistant-view-intro">
+            <div className="assistant-view-intro" style="Display:none;">
               <h2>AI Assistant</h2>
               <p>Ask anything about this statement — spending, salary, recurring merchants, or anomalies.</p>
             </div>
@@ -244,11 +258,8 @@ export default function App() {
           </div>
         ) : (
           <div className="dashboard-scroll">
-            <div className="dashboard-toolbar">
-              <h2>Financial command center</h2>
-              <div className="toolbar-pill">Live insights</div>
-            </div>
-            <Dashboard data={analysis} />
+          
+            <Dashboard data={analysis} onAskAI={handleAskAI} user={user} filename={filename} />
           </div>
         )}
       </div>
@@ -267,6 +278,7 @@ export default function App() {
             messages={messages}
             setMessages={setMessages}
             onExpand={expandChatToFullTab}
+            autoPrompt={insightsTrigger}
           />
         </>
       )}

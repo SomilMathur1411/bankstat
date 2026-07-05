@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useRef, useState } from "react";
 import {
   ResponsiveContainer,
   BarChart,
@@ -19,7 +19,198 @@ import {
   Legend,
   Area,
 } from "recharts";
+import { jsPDF } from "jspdf";
+import html2canvas from "html2canvas";
 import KpiCards from "./KpiCards.jsx";
+
+// Builds the text-based part of the PDF summary (account info + key metrics
+// + top categories/merchants/anomalies), and returns the live jsPDF doc plus
+// the layout helpers used to build it — so the caller can keep appending to
+// the SAME document (e.g. chart screenshots) using the same margins/cursor.
+function buildSummaryPdf({ data, user, filename }) {
+  const doc = new jsPDF({ unit: "pt", format: "a4" });
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+  const marginX = 48;
+  let y = 116;
+
+  const money = (v) =>
+    v === null || v === undefined
+      ? "N/A"
+      : `Rs. ${Number(v).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
+
+  const ensureSpace = (needed = 18) => {
+    if (y + needed > pageHeight - 48) {
+      doc.addPage();
+      y = 56;
+    }
+  };
+
+  const heading = (text) => {
+    ensureSpace(28);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(12.5);
+    doc.setTextColor(20, 22, 46);
+    doc.text(text, marginX, y);
+    y += 8;
+    doc.setDrawColor(230, 233, 245);
+    doc.line(marginX, y, pageWidth - marginX, y);
+    y += 16;
+  };
+
+  const line = (label, value) => {
+    ensureSpace(16);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(10);
+    doc.setTextColor(92, 96, 121);
+    doc.text(String(label), marginX, y);
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(20, 22, 46);
+    doc.text(String(value), marginX + 220, y);
+    y += 16;
+  };
+
+  const addPageBreak = () => {
+    doc.addPage();
+    y = 56;
+  };
+
+  // Smaller title used above each individual chart image (as opposed to
+  // `heading`, which is the bigger section title with a divider line).
+  const subheading = (title, desc) => {
+    ensureSpace(34);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(11);
+    doc.setTextColor(20, 22, 46);
+    doc.text(title || "Chart", marginX, y);
+    y += 14;
+    if (desc) {
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(9);
+      doc.setTextColor(92, 96, 121);
+      doc.text(desc, marginX, y);
+      y += 14;
+    } else {
+      y += 2;
+    }
+  };
+
+  // Drops a captured chart image (PNG data URL) into the doc, scaled to fit
+  // the content width, breaking to a new page first if it won't fit.
+  const addImage = (dataUrl, imgWidthPx, imgHeightPx) => {
+    const maxWidth = pageWidth - marginX * 2;
+    const ratio = imgHeightPx / imgWidthPx;
+    let renderWidth = maxWidth;
+    let renderHeight = maxWidth * ratio;
+    const maxHeight = pageHeight - 104;
+    if (renderHeight > maxHeight) {
+      renderHeight = maxHeight;
+      renderWidth = renderHeight / ratio;
+    }
+    ensureSpace(renderHeight + 24);
+    doc.addImage(dataUrl, "PNG", marginX, y, renderWidth, renderHeight);
+    y += renderHeight + 24;
+  };
+
+  // Header band
+  doc.setFillColor(109, 94, 252);
+  doc.rect(0, 0, pageWidth, 90, "F");
+  doc.setTextColor(255, 255, 255);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(18);
+  doc.text("Bank Statement Analyser", marginX, 40);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(10.5);
+  doc.text("Financial summary report", marginX, 60);
+  doc.setFontSize(9);
+  doc.text(`Generated ${new Date().toLocaleString("en-IN")}`, marginX, 76);
+
+  heading("Account");
+  line("Name", user?.name || "\u2014");
+  line("Email", user?.email || "\u2014");
+  line("Statement file", filename || "\u2014");
+  y += 6;
+
+  const summary = data.summary || {};
+  heading("Key metrics");
+  line("Total income", money(summary.totalIncome));
+  line("Total expense", money(summary.totalExpense));
+  line("Net savings", money(summary.netSavings));
+  line("Avg monthly spend", money(summary.avgMonthlySpend));
+  line("Transactions", summary.transactionCount ?? "\u2014");
+  line("Salary detected", summary.salaryDetected ? "Yes" : "No");
+  if (summary.salaryDetected && summary.salaryMerchants?.length) {
+    line("Salary source(s)", summary.salaryMerchants.join(", "));
+  }
+  y += 6;
+
+  const categories = data.topCategoriesOverall || data.categoryBreakdown || [];
+  if (categories.length) {
+    heading("Top spending categories");
+    categories.slice(0, 8).forEach((c) => line(c.category, money(c.amount)));
+    y += 6;
+  }
+
+  const recurring = data.recurringMerchants || [];
+  if (recurring.length) {
+    heading("Recurring merchants");
+    recurring
+      .slice(0, 10)
+      .forEach((m) => line(`${m.merchant} (${m.type === "income" ? "income" : "expense"})`, money(m.totalSpend)));
+    y += 6;
+  }
+
+  const anomalies = data.anomalies || { income: [], expense: [] };
+  const spikes = data.expenseSpikes || [];
+  heading("Anomalies");
+  line("Unusual expenses", anomalies.expense?.length ?? 0);
+  line("Unusual income events", anomalies.income?.length ?? 0);
+  line("Expense spikes flagged", spikes.length);
+
+  return { doc, heading, subheading, addImage, addPageBreak };
+}
+
+// Recharts renders a real <svg> for every chart. Rasterizing that SVG
+// directly (serialize -> Image -> canvas) is much more faithful than asking
+// html2canvas to re-render the whole card, which frequently mis-scales
+// gradients, clip-paths, and stacked/composed charts.
+function svgToPngDataUrl(svgEl, scale = 2) {
+  return new Promise((resolve, reject) => {
+    try {
+      const width = svgEl.width?.baseVal?.value || svgEl.clientWidth || 600;
+      const height = svgEl.height?.baseVal?.value || svgEl.clientHeight || 320;
+
+      const clone = svgEl.cloneNode(true);
+      clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+      clone.setAttribute("width", String(width));
+      clone.setAttribute("height", String(height));
+
+      const svgString = new XMLSerializer().serializeToString(clone);
+      const svgBlob = new Blob([svgString], { type: "image/svg+xml;charset=utf-8" });
+      const url = URL.createObjectURL(svgBlob);
+
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.round(width * scale);
+        canvas.height = Math.round(height * scale);
+        const ctx = canvas.getContext("2d");
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        URL.revokeObjectURL(url);
+        resolve({ dataUrl: canvas.toDataURL("image/png"), width: canvas.width, height: canvas.height });
+      };
+      img.onerror = (err) => {
+        URL.revokeObjectURL(url);
+        reject(err);
+      };
+      img.src = url;
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
 
 const COLORS = {
   salary: "#22c55e",
@@ -40,18 +231,6 @@ const TOOLTIP_STYLE = {
   boxShadow: "0 14px 36px rgba(15, 23, 42, 0.14)",
 };
 
-function ChartCard({ title, desc, children, empty }) {
-  return (
-    <div className="chart-card">
-      <div className="chart-card-top">
-        <h3>{title}</h3>
-        {desc && <div className="chart-desc">{desc}</div>}
-      </div>
-      {empty ? <div className="chart-empty">Not enough data to render this chart.</div> : children}
-    </div>
-  );
-}
-
 const money = (v) => (v === null || v === undefined ? "" : v.toLocaleString("en-IN", { maximumFractionDigits: 0 }));
 const formatCurrency = (v) =>
   v === null || v === undefined ? "—" : new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(v);
@@ -67,7 +246,92 @@ function mergeByDay(cycles) {
   return Array.from(dayMap.values()).sort((a, b) => a.day - b.day);
 }
 
-export default function Dashboard({ data }) {
+export default function Dashboard({ data, onAskAI, user, filename }) {
+  const chartsRef = useRef(null);
+  const [exporting, setExporting] = useState(false);
+
+  async function handleExportSummary() {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const { doc, heading, subheading, addImage, addPageBreak } = buildSummaryPdf({ data, user, filename });
+
+      const container = chartsRef.current;
+      const chartCards = container ? Array.from(container.querySelectorAll(".chart-card")) : [];
+
+      if (chartCards.length) {
+        addPageBreak();
+        heading("Charts & visualizations");
+
+        for (const card of chartCards) {
+          const title = card.querySelector("h3")?.textContent || "Chart";
+          const desc = card.querySelector(".chart-desc")?.textContent || "";
+          const emptyNotice = card.querySelector(".chart-empty");
+
+          subheading(title, desc);
+
+          if (emptyNotice) {
+            // Nothing to plot for this one — skip the image entirely.
+            continue;
+          }
+
+          try {
+            const svgEl = card.querySelector("svg");
+            if (svgEl) {
+              const { dataUrl, width, height } = await svgToPngDataUrl(svgEl, 2);
+              addImage(dataUrl, width, height);
+            } else {
+              // No SVG on this card (e.g. the recurring merchants list) —
+              // html2canvas handles plain HTML/text content just fine.
+              const target = card.querySelector(".merchant-list") || card;
+              const canvas = await html2canvas(target, { scale: 2, backgroundColor: "#ffffff" });
+              addImage(canvas.toDataURL("image/png"), canvas.width, canvas.height);
+            }
+          } catch (err) {
+            console.error(`Failed to capture chart "${title}" for the PDF export:`, err);
+          }
+        }
+      }
+
+      const safeName = (user?.name || "statement").trim().replace(/\s+/g, "_").toLowerCase();
+      doc.save(`${safeName}-financial-summary.pdf`);
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  function ChartCard({ title, desc, children, empty }) {
+    function handleAskAboutChart() {
+      if (!onAskAI) return;
+      onAskAI(
+        `Looking specifically at the "${title}" chart${desc ? ` (${desc})` : ""}, ` +
+          `what stands out in this part of my statement, and is there anything I should act on?`
+      );
+    }
+
+    return (
+      <div className="chart-card">
+        <div className="chart-card-top">
+          <div className="chart-card-heading">
+            <h3>{title}</h3>
+            {desc && <div className="chart-desc">{desc}</div>}
+          </div>
+          {onAskAI && (
+            <button
+              type="button"
+              className="chart-ask-btn"
+              onClick={handleAskAboutChart}
+              title={`Ask AI about the ${title} chart`}
+            >
+              ✦ Ask AI
+            </button>
+          )}
+        </div>
+        {empty ? <div className="chart-empty">Not enough data to render this chart.</div> : children}
+      </div>
+    );
+  }
+
   const {
     summary,
     monthlySpend = [],
@@ -123,20 +387,20 @@ export default function Dashboard({ data }) {
   ];
 
   return (
-    <div className="dashboard-shell">
+    <div className="dashboard-shell" ref={chartsRef}>
       <section className="hero-panel">
         <div className="hero-copy">
           <div className="eyebrow">Financial command center</div>
-          <h2>Here’s your money, beautifully organized.</h2>
+          <h2>Nostro to Vostro. Clarity in every transaction.</h2>
           <p>
             A premium view of your statement with clearer spending patterns, stronger salary signals, and AI-ready insights.
           </p>
           <div className="hero-actions">
-            <button type="button" className="btn btn-primary">
-              Ask AI
+            <button type="button" className="btn btn-primary" onClick={() => onAskAI()}>
+              Get AI insights
             </button>
-            <button type="button" className="btn btn-secondary">
-              Export summary
+            <button type="button" className="btn btn-secondary" onClick={handleExportSummary} disabled={exporting}>
+              {exporting ? "Exporting…" : "Export summary"}
             </button>
           </div>
           <div className="hero-pills">
@@ -159,7 +423,7 @@ export default function Dashboard({ data }) {
 
       <KpiCards summary={summary} />
 
-      <section className="insight-grid">
+      <section className="insight-grid"  style={{ display: "none" }}>
         {heroInsights.map((item) => (
           <div key={item.title} className={`insight-card ${item.tone}`}>
             <div className="insight-icon">{item.icon}</div>
