@@ -1,5 +1,7 @@
 # Bank Statement Analyser — Frontend + API
 
+![Uploading ChatGPT Image Jul 3, 2026, 07_27_08 PM.png…]()
+
 A dashboard frontend for the analysis pipeline in `bankStatementAnalyser.ipynb`, plus a
 FastAPI backend that ports the notebook's pandas logic into a reusable JSON API.
 
