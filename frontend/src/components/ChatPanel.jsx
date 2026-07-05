@@ -138,10 +138,12 @@ export default function ChatPanel({
   const [busy, setBusy] = useState(false);
   const scrollRef = useRef(null);
   const lastAutoPromptId = useRef(null);
+  const chatMessages = Array.isArray(messages) ? messages : [];
+  const setChatMessages = typeof setMessages === "function" ? setMessages : () => {};
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages, open]);
+  }, [chatMessages, open]);
 
   // Lets a parent (e.g. the "Get AI insights" button on the dashboard) open
   // this panel and have a message auto-sent, without duplicating the send
@@ -156,18 +158,18 @@ export default function ChatPanel({
   }, [autoPrompt]);
 
   async function handleSend(text) {
-    const message = (text ?? input).trim();
+    const message = String(text ?? input ?? "").trim();
     if (!message || busy) return;
 
-    setMessages((m) => [...m, { role: "user", text: message }]);
+    setChatMessages((m) => [...(Array.isArray(m) ? m : []), { role: "user", text: message }]);
     setInput("");
     setBusy(true);
 
     try {
       const { reply } = await sendChatMessage(message, analysis);
-      setMessages((m) => [...m, { role: "bot", text: reply }]);
+      setChatMessages((m) => [...(Array.isArray(m) ? m : []), { role: "bot", text: reply }]);
     } catch (e) {
-      setMessages((m) => [...m, { role: "bot", text: `Something went wrong: ${e.message}` }]);
+      setChatMessages((m) => [...(Array.isArray(m) ? m : []), { role: "bot", text: `Something went wrong: ${e.message}` }]);
     } finally {
       setBusy(false);
     }
@@ -209,7 +211,7 @@ export default function ChatPanel({
       </div>
 
       <div className="chat-messages" ref={scrollRef}>
-        {messages.map((m, i) => (
+        {chatMessages.map((m, i) => (
           <div key={i} className={`chat-bubble ${m.role}`}>
             {m.role === "bot" ? renderMessageBody(m.text) : m.text}
           </div>

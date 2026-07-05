@@ -41,7 +41,7 @@ app = FastAPI(title="Bank Statement Analyser API")
 # falls back to the rule-based responder below, so the app still works
 # without a key.
 # ---------------------------------------------------------------------------
-GROQ_API_KEY = "YOUR_KEY_HERE"
+GROQ_API_KEY = "your api key here"  # os.environ.get("GROQ_API_KEY")
 GROQ_MODEL = "openai/gpt-oss-120b"
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
