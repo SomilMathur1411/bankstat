@@ -260,6 +260,7 @@ export default function App() {
               setMessages={setMessages}
               onCollapse={() => setView("dashboard")}
               userName={user?.name}
+              userBio={user?.bio}
             />
           </div>
         ) : (
@@ -286,6 +287,7 @@ export default function App() {
             onExpand={expandChatToFullTab}
             autoPrompt={insightsTrigger}
             userName={user?.name}
+            userBio={user?.bio}
           />
         </>
       )}

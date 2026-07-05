@@ -134,6 +134,7 @@ export default function ChatPanel({
   setMessages,
   autoPrompt,
   userName,
+  userBio,
 }) {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -167,7 +168,7 @@ export default function ChatPanel({
     setBusy(true);
 
     try {
-      const { reply } = await sendChatMessage(message, analysis, userName);
+      const { reply } = await sendChatMessage(message, analysis, userName, userBio);
       setChatMessages((m) => [...(Array.isArray(m) ? m : []), { role: "bot", text: reply }]);
     } catch (e) {
       setChatMessages((m) => [...(Array.isArray(m) ? m : []), { role: "bot", text: `Something went wrong: ${e.message}` }]);
