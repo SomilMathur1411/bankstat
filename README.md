@@ -1,6 +1,7 @@
 # SmartHQ — Frontend + API
 
-![Uploading ChatGPT Image Jul 3, 2026, 07_27_08 PM.png…]()
+<img width="1536" height="1024" alt="ChatGPT Image Jul 3, 2026, 07_27_08 PM" src="https://github.com/user-attachments/assets/0b6f511e-78be-46ee-ae28-97f32f32fcb0" />
+
 
 A dashboard frontend for the analysis pipeline in `bankStatementAnalyser.ipynb`, plus a
 FastAPI backend that ports the notebook's pandas logic into a reusable JSON API.
