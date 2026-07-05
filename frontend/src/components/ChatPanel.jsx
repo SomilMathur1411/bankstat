@@ -219,13 +219,15 @@ export default function ChatPanel({
         {busy && <div className="chat-bubble bot">Thinking…</div>}
       </div>
 
-      <div className="chat-suggestions">
-        {SUGGESTIONS.map((s) => (
-          <button key={s} className="chat-chip" onClick={() => handleSend(s)}>
-            {s}
-          </button>
-        ))}
-      </div>
+      {!chatMessages.some((m) => m.role === "user") && (
+        <div className="chat-suggestions">
+          {SUGGESTIONS.map((s) => (
+            <button key={s} className="chat-chip" onClick={() => handleSend(s)}>
+              {s}
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className="chat-input-row">
         <input

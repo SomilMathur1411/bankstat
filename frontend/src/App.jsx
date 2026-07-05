@@ -244,10 +244,7 @@ export default function App() {
           <UploadScreen onFileChosen={handleFileChosen} loading={loading} error={error} />
         ) : view === "assistant" ? (
           <div className="assistant-view">
-            <div className="assistant-view-intro" >
-              <h2>AI Assistant</h2>
-              <p>Ask anything about this statement — spending, salary, recurring merchants, or anomalies.</p>
-            </div>
+            
             <ChatPanel
               analysis={analysis}
               variant="full"

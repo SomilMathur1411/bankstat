@@ -453,7 +453,7 @@ def run_full_analysis(file_bytes: bytes, filename: str, rules: Optional[dict] = 
                     "miscIncomeIn": _num(row["misc_income_in"]),
                     "totalSpend": _num(row["total_spend"]),
                     "netSaved": _num(row["net_saved"]),
-                    "savingsPct": row["savings_pct"],
+                    "savingsPct": _num(row["savings_pct"]),
                 }
             )
 
