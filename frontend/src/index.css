@@ -151,14 +151,11 @@ button {
 
 .brand-name {
   font-weight: 700;
-  font-size: 15px;
+  font-size: 17px;
   letter-spacing: -0.1px;
 }
 
-.brand-sub {
-  font-size: 12px;
-  color: var(--text-muted);
-}
+
 
 .header-center {
   flex: 1;

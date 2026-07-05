@@ -187,7 +187,7 @@ export default function App() {
             <div className="brand-mark">₹</div>
             <div>
               <div className="brand-name">SmartHQ</div>
-              <div className="brand-sub">Secure profile · Saved cards · AI insights</div>
+           
             </div>
           </div>
         </header>
@@ -203,7 +203,7 @@ export default function App() {
           <div className="brand-mark">₹</div>
           <div>
             <div className="brand-name">SmartHQ</div>
-            <div className="brand-sub">Spending · Income · Anomalies</div>
+      
           </div>
         </div>
 
