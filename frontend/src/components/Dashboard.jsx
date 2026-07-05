@@ -257,15 +257,26 @@ export default function Dashboard({ data }) {
           </ResponsiveContainer>
         </ChartCard>
 
-        <ChartCard title="Recurring Merchants" desc="Same merchant + similar amount, 3+ times" empty={!recurringMerchants.length}>
+        <ChartCard
+          title="Recurring Merchants"
+          desc="Same source/merchant + similar amount, 3+ times — includes recurring income like salary"
+          empty={!recurringMerchants.length}
+        >
           <ul className="merchant-list">
             {recurringMerchants.map((m, i) => (
               <li key={i}>
-                <div>
-                  <div className="merchant-name">{m.merchant}</div>
-                  <div className="merchant-meta">{m.occurrences}× occurrences</div>
+                <div className="merchant-name-row">
+                  <span className={`merchant-type-dot ${m.type === "income" ? "income" : "expense"}`} />
+                  <div>
+                    <div className="merchant-name">{m.merchant}</div>
+                    <div className="merchant-meta">
+                      {m.occurrences}× occurrences · {m.type === "income" ? "income" : "expense"}
+                    </div>
+                  </div>
                 </div>
-                <div className="merchant-amount">₹{money(m.totalSpend)}</div>
+                <div className={`merchant-amount ${m.type === "income" ? "income" : "expense"}`}>
+                  ₹{money(m.totalSpend)}
+                </div>
               </li>
             ))}
           </ul>
