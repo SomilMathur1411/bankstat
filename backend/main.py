@@ -8,11 +8,12 @@ Run locally:
 Endpoints:
     POST /api/analyze   -> upload a statement (csv/xls/xlsx), get full JSON analysis
     POST /api/chat      -> ask a question about the last analysis. Answered by
-                           Groq when GROQ_API_KEY is set in the environment,
-                           otherwise falls back to a simple rule-based responder.
+                           Gemini first, then Groq as a fallback, while always
+                           grounding the answer with rule-based finance insights.
 
-Set your Groq API key before starting the server, e.g.:
-    export GROQ_API_KEY=sk-...          # or put it in a .env file (see .env.example)
+Set your Gemini/Groq API keys before starting the server, e.g.:
+    export GEMINI_API_KEY=...          # or put it in a .env file (see .env.example)
+    export GROQ_API_KEY=...            # optional fallback
 """
 
 from __future__ import annotations
@@ -30,25 +31,24 @@ from pydantic import BaseModel
 
 from analyzer import AnalysisError, run_full_analysis
 
-load_dotenv()  # picks up a local .env file if present, no-op otherwise
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))  # picks up the local .env file if present, no-op otherwise
 
 app = FastAPI(title="Bank Statement Analyser API")
 
 # ---------------------------------------------------------------------------
-# Groq configuration
+# LLM configuration
 #
-# Set GROQ_API_KEY in your environment (or a .env file loaded before startup)
-# to enable real LLM-backed chat. If it's not set, the API transparently
-# falls back to the rule-based responder below, so the app still works
-# without a key.
+# Gemini is used first when a free API key is available. Groq is used as a
+# fallback provider. The rule-based responder is always used as the grounding
+# layer, and the AI reply is blended with it rather than replacing it.
 # ---------------------------------------------------------------------------
-<<<<<<< HEAD
-GROQ_API_KEY = ""  # os.environ.get("GROQ_API_KEY")
-=======
-# Load the API key from the environment (or a local .env file). Do NOT hardcode
-# real keys in source. See backend/.env.example for the expected variable name.
+# Load the API keys from the environment (or a local .env file). Do NOT hardcode
+# real keys in source. See backend/.env.example for the expected variable names.
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+GEMINI_MODEL = "gemini-1.5-flash"
+GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta2/models/{model}:generateText"
+
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
->>>>>>> 18a386c (Move API key configuration to .env)
 GROQ_MODEL = "openai/gpt-oss-120b"
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
@@ -81,11 +81,10 @@ async def analyze(file: UploadFile = File(...)):
 # ---------------------------------------------------------------------------
 # Chat endpoint
 #
-# When GROQ_API_KEY is configured, questions are answered by Groq, grounded
-# in a trimmed JSON summary of the statement analysis (so the model can't
-# see raw transaction-level PII it doesn't need, and prompts stay small).
-# If the key is missing, or the Groq call fails for any reason, we fall
-# back to the rule-based responder further down so the app never breaks.
+# The answer is always grounded in the rule-based finance summary first.
+# Gemini is tried first when a free API key is available, then Groq is used
+# as a fallback provider. The AI reply is blended with the rule-based answer
+# rather than replacing it outright.
 # ---------------------------------------------------------------------------
 
 class ChatRequest(BaseModel):
@@ -224,6 +223,40 @@ def build_analysis_context(analysis: dict, message: str = "") -> str:
     return json.dumps(context, default=str)
 
 
+async def call_gemini(system_prompt: str, user_message: str) -> str:
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY is not set. Please configure your .env file.")
+
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            GEMINI_API_URL.format(model=GEMINI_MODEL),
+            params={"key": GEMINI_API_KEY},
+            json={
+                "prompt": {
+                    "text": f"{system_prompt}\n\nUser question: {user_message}"
+                }
+            },
+        )
+    resp.raise_for_status()
+    data = resp.json()
+
+    if "output" in data and data["output"]:
+        first_output = data["output"][0]
+        contents = first_output.get("content", [])
+        for item in contents:
+            if isinstance(item, dict) and item.get("text"):
+                return item["text"].strip()
+
+    if "candidates" in data and data["candidates"]:
+        candidate = data["candidates"][0]
+        if "content" in candidate and candidate["content"]:
+            part = candidate["content"][0].get("parts", [])[0]
+            if part and isinstance(part, dict) and part.get("text"):
+                return part["text"].strip()
+
+    raise RuntimeError("Unexpected Gemini API response format")
+
+
 async def call_groq(system_prompt: str, user_message: str) -> str:
     if not GROQ_API_KEY:
         raise RuntimeError("GROQ_API_KEY is not set. Please configure your .env file.")
@@ -248,6 +281,18 @@ async def call_groq(system_prompt: str, user_message: str) -> str:
     resp.raise_for_status()
     data = resp.json()
     return data["choices"][0]["message"]["content"].strip()
+
+
+def combine_rule_and_ai(rule_answer: str, ai_answer: str) -> str:
+    rule_answer = (rule_answer or "").strip()
+    ai_answer = (ai_answer or "").strip()
+
+    if not ai_answer:
+        return rule_answer
+    if not rule_answer or "I can currently answer basic questions" in rule_answer:
+        return ai_answer
+
+    return f"{rule_answer}\n\nAI insight:\n{ai_answer}"
 
 
 GROQ_SYSTEM_PROMPT = (
@@ -367,27 +412,38 @@ def answer_from_rules(message: str, analysis: dict) -> str:
     )
 
 
+def build_system_prompt(req: ChatRequest, context: str) -> str:
+    # Only a first name, if given, is used for personalization — never
+    # email, password, or card details. Those fields simply aren't on
+    # ChatRequest, so there's nothing to accidentally forward here.
+    first_name = (req.user_name or "").strip().split(" ")[0]
+    name_line = f"The user's first name is {first_name}. Use it once or twice, naturally, not in every message.\n\n" if first_name else ""
+    bio = (req.user_bio or "").strip()
+    bio_line = f"The user described themselves like this: \"{bio}\"\n\n" if bio else ""
+    return GROQ_SYSTEM_PROMPT.format(name_line=name_line, bio_line=bio_line, context=context)
+
+
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
+    rule_reply = answer_from_rules(req.message, req.analysis)
+    context = build_analysis_context(req.analysis, req.message)
+    system_prompt = build_system_prompt(req, context)
+
+    if GEMINI_API_KEY:
+        try:
+            ai_reply = await call_gemini(system_prompt, req.message)
+            return ChatResponse(reply=combine_rule_and_ai(rule_reply, ai_reply))
+        except Exception:  # noqa: BLE001
+            # Gemini failed; keep the rule-based answer as the grounding layer
+            # and try Groq as the next provider.
+            pass
+
     if GROQ_API_KEY:
         try:
-            context = build_analysis_context(req.analysis, req.message)
-            # Only a first name, if given, is used for personalization — never
-            # email, password, or card details. Those fields simply aren't on
-            # ChatRequest, so there's nothing to accidentally forward here.
-            first_name = (req.user_name or "").strip().split(" ")[0]
-            name_line = f"The user's first name is {first_name}. Use it once or twice, naturally, not in every message.\n\n" if first_name else ""
-            bio = (req.user_bio or "").strip()
-            bio_line = f"The user described themselves like this: \"{bio}\"\n\n" if bio else ""
-            system_prompt = GROQ_SYSTEM_PROMPT.format(name_line=name_line, bio_line=bio_line, context=context)
-            reply = await call_groq(system_prompt, req.message)
-            return ChatResponse(reply=reply)
-        except Exception as e:  # noqa: BLE001
-            # Groq call failed (bad key, network issue, rate limit, etc.) —
-            # don't break the UI, just fall back to the rule-based answer
-            # and quietly note what happened.
-            fallback = answer_from_rules(req.message, req.analysis)
-            return ChatResponse(reply=f"{fallback}\n\n(AI model call failed, showing a basic answer instead: {e})")
+            ai_reply = await call_groq(system_prompt, req.message)
+            return ChatResponse(reply=combine_rule_and_ai(rule_reply, ai_reply))
+        except Exception:  # noqa: BLE001
+            # Groq also failed; fall back to the rule-based answer.
+            return ChatResponse(reply=rule_reply)
 
-    reply = answer_from_rules(req.message, req.analysis)
-    return ChatResponse(reply=reply)
+    return ChatResponse(reply=rule_reply)
