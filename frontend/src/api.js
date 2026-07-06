@@ -16,6 +16,20 @@ export async function analyzeFile(file) {
   return res.json();
 }
 
+export async function analyzeDemoFile() {
+  // No dedicated backend "demo" route exists — instead we fetch the static
+  // sample statement bundled with the frontend (public/sample_bank_statement.csv)
+  // and run it through the same /api/analyze endpoint real uploads use.
+  const sampleRes = await fetch("/sample_bank_statement.csv");
+  if (!sampleRes.ok) {
+    throw new Error("Could not load the sample statement file.");
+  }
+  const blob = await sampleRes.blob();
+  const file = new File([blob], "sample_bank_statement.csv", { type: "text/csv" });
+
+  return analyzeFile(file);
+}
+
 export async function sendChatMessage(message, analysis, userName, userBio) {
   // Only ever send a first name for personalization — never email,
   // password, or card details, even if a caller passes the whole user

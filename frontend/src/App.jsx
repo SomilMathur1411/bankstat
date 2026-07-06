@@ -4,7 +4,7 @@ import Dashboard from "./components/Dashboard.jsx";
 import AuthScreen from "./components/AuthScreen.jsx";
 import AccountPanel from "./components/AccountPanel.jsx";
 import ChatPanel from "./components/ChatPanel.jsx";
-import { analyzeFile } from "./api.js";
+import { analyzeFile, analyzeDemoFile } from "./api.js";
 
 function buildInitialMessages(user) {
   const firstName = user?.name ? user.name.trim().split(" ")[0] : "";
@@ -108,6 +108,21 @@ export default function App() {
       setFilename(file.name);
     } catch (e) {
       setError(e.message || "Something went wrong analysing this file.");
+    } finally {
+      setLoading(false);
+    }
+  }
+  async function handleDemoMode() {
+    setLoading(true);
+    setError("");
+  
+    try {
+      const result = await analyzeDemoFile();
+  
+      setAnalysis(result);
+      setFilename("sample_bank_statement.csv");
+    } catch (e) {
+      setError(e.message || "Unable to load demo statement.");
     } finally {
       setLoading(false);
     }
@@ -249,8 +264,12 @@ export default function App() {
             <AccountPanel user={user} onUserUpdate={handleUserUpdate} onLogout={handleLogout} />
           </div>
         ) : !analysis ? (
-          <UploadScreen onFileChosen={handleFileChosen} loading={loading} error={error} />
-        ) : view === "assistant" ? (
+<UploadScreen
+  onFileChosen={handleFileChosen}
+  onDemoMode={handleDemoMode}
+  loading={loading}
+  error={error}
+/>        ) : view === "assistant" ? (
           <div className="assistant-view">
             
             <ChatPanel
