@@ -8,12 +8,16 @@ Run locally:
 Endpoints:
     POST /api/analyze   -> upload a statement (csv/xls/xlsx), get full JSON analysis
     POST /api/chat      -> ask a question about the last analysis. Answered by
-                           Gemini first, then Groq as a fallback, while always
-                           grounding the answer with rule-based finance insights.
+                           Gemini, while always grounding the answer with
+                           rule-based finance insights.
 
-Set your Gemini/Groq API keys before starting the server, e.g.:
+                           NOTE: Groq is temporarily commented out below so we
+                           can test Gemini in isolation. The Groq code is left
+                           in place (just not called) — uncomment the block in
+                           chat() to bring it back as a fallback.
+
+Set your Gemini API key before starting the server, e.g.:
     export GEMINI_API_KEY=...          # or put it in a .env file (see .env.example)
-    export GROQ_API_KEY=...            # optional fallback
 """
 
 from __future__ import annotations
@@ -38,17 +42,19 @@ app = FastAPI(title="Bank Statement Analyser API")
 # ---------------------------------------------------------------------------
 # LLM configuration
 #
-# Gemini is used first when a free API key is available. Groq is used as a
-# fallback provider. The rule-based responder is always used as the grounding
-# layer, and the AI reply is blended with it rather than replacing it.
+# Gemini is the only provider in use right now (Groq is commented out below,
+# in the chat() endpoint, while we test Gemini on its own).
 # ---------------------------------------------------------------------------
-# Load the API keys from the environment (or a local .env file). Do NOT hardcode
-# real keys in source. See backend/.env.example for the expected variable names.
+# Load the API key from the environment (or a local .env file). Do NOT
+# hardcode real keys in source. See backend/.env.example for the expected
+# variable names.
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-GEMINI_MODEL = "gemini-1.5-flash"
-GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta2/models/{model}:generateText"
+GEMINI_MODEL = "gemini-2.5-flash"  # check https://ai.google.dev/gemini-api/docs/models for the current recommended model name
+GEMINI_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+# Groq is temporarily unused (see chat() below) but left configured so it's a
+# one-line uncomment to bring back as a fallback provider.
+GROQ_API_KEY = = os.getenv("GROQ_API_KEY")
 GROQ_MODEL = "openai/gpt-oss-120b"
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
@@ -82,9 +88,8 @@ async def analyze(file: UploadFile = File(...)):
 # Chat endpoint
 #
 # The answer is always grounded in the rule-based finance summary first.
-# Gemini is tried first when a free API key is available, then Groq is used
-# as a fallback provider. The AI reply is blended with the rule-based answer
-# rather than replacing it outright.
+# Gemini is tried when a free API key is available. The AI reply is blended
+# with the rule-based answer rather than replacing it outright.
 # ---------------------------------------------------------------------------
 
 class ChatRequest(BaseModel):
@@ -108,9 +113,9 @@ class ChatResponse(BaseModel):
 
 # Hard cap on how many raw transaction rows we'll ever forward to the LLM
 # for a single question. This used to be 1500 (basically "send everything"),
-# which is what was blowing past Groq's payload limit on any statement with
-# real volume. Now we retrieve only what's relevant to the question instead
-# of trying to fit the whole statement in every request.
+# which is what was blowing past payload limits on any statement with real
+# volume. Now we retrieve only what's relevant to the question instead of
+# trying to fit the whole statement in every request.
 MAX_TRANSACTIONS_FOR_AI = 80
 RECENT_FALLBACK_COUNT = 20
 
@@ -130,12 +135,12 @@ def select_relevant_transactions(message: str, transactions: list, max_n: int = 
     return the best matches instead of a blind slice of the transaction
     list.
 
-    This is what actually keeps the Groq payload small — a statement can
-    have thousands of transactions, but a question like "how much did I
-    spend on Swiggy" only needs the handful of rows that match "swiggy",
-    not the entire history. If nothing in the question matches anything
-    (e.g. "give me an overview"), we fall back to a small recent slice just
-    so the model has *some* concrete rows to point to.
+    This is what actually keeps the payload small — a statement can have
+    thousands of transactions, but a question like "how much did I spend on
+    Swiggy" only needs the handful of rows that match "swiggy", not the
+    entire history. If nothing in the question matches anything (e.g. "give
+    me an overview"), we fall back to a small recent slice so the model has
+    *some* concrete rows to point to.
     """
     q_tokens = _tokenize(message)
     mentioned_years = {t for t in q_tokens if re.fullmatch(r"20\d{2}", t)}
@@ -229,32 +234,22 @@ async def call_gemini(system_prompt: str, user_message: str) -> str:
 
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
-            GEMINI_API_URL.format(model=GEMINI_MODEL),
+            GEMINI_API_URL,
             params={"key": GEMINI_API_KEY},
+            headers={"Content-Type": "application/json"},
             json={
-                "prompt": {
-                    "text": f"{system_prompt}\n\nUser question: {user_message}"
-                }
+                "systemInstruction": {"parts": [{"text": system_prompt}]},
+                "contents": [{"role": "user", "parts": [{"text": user_message}]}],
+                "generationConfig": {"temperature": 0.5, "maxOutputTokens": 1000},
             },
         )
     resp.raise_for_status()
     data = resp.json()
 
-    if "output" in data and data["output"]:
-        first_output = data["output"][0]
-        contents = first_output.get("content", [])
-        for item in contents:
-            if isinstance(item, dict) and item.get("text"):
-                return item["text"].strip()
-
-    if "candidates" in data and data["candidates"]:
-        candidate = data["candidates"][0]
-        if "content" in candidate and candidate["content"]:
-            part = candidate["content"][0].get("parts", [])[0]
-            if part and isinstance(part, dict) and part.get("text"):
-                return part["text"].strip()
-
-    raise RuntimeError("Unexpected Gemini API response format")
+    try:
+        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except (KeyError, IndexError) as e:
+        raise RuntimeError(f"Unexpected Gemini API response format: {data}") from e
 
 
 async def call_groq(system_prompt: str, user_message: str) -> str:
@@ -433,17 +428,17 @@ async def chat(req: ChatRequest):
         try:
             ai_reply = await call_gemini(system_prompt, req.message)
             return ChatResponse(reply=combine_rule_and_ai(rule_reply, ai_reply))
-        except Exception:  # noqa: BLE001
-            # Gemini failed; keep the rule-based answer as the grounding layer
-            # and try Groq as the next provider.
-            pass
+        except Exception as e:  # noqa: BLE001
+            # Gemini failed (bad key, rate limit, region issue, etc.) — fall
+            # through to Groq as a backup provider instead of going straight
+            # to the rule-based answer.
+            print(f"[chat] Gemini call failed: {e}")
 
     if GROQ_API_KEY:
         try:
             ai_reply = await call_groq(system_prompt, req.message)
             return ChatResponse(reply=combine_rule_and_ai(rule_reply, ai_reply))
-        except Exception:  # noqa: BLE001
-            # Groq also failed; fall back to the rule-based answer.
-            return ChatResponse(reply=rule_reply)
+        except Exception as e:  # noqa: BLE001
+            print(f"[chat] Groq call failed: {e}")
 
     return ChatResponse(reply=rule_reply)

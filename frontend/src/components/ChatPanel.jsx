@@ -190,7 +190,7 @@ export default function ChatPanel({
           </div>
           <div>
             <div className="chat-header-title">Statement Assistant</div>
-            <span className="chat-header-badge">AI-powered • Groq</span>
+            <span className="chat-header-badge">AI-powered • Gemini • OpenAI </span>
           </div>
         </div>
         <div className="chat-header-buttons">
