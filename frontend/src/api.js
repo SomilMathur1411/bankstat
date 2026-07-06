@@ -1,4 +1,4 @@
-const API_BASE = ""; // proxied to backend via vite.config.js in dev; set a full URL in production if needed
+const API_BASE = import.meta.env.VITE_API_URL || "";// proxied to backend via vite.config.js in dev; set a full URL in production if needed
 
 export async function analyzeFile(file) {
   const form = new FormData();
