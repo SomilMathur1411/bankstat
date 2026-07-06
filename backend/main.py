@@ -54,7 +54,7 @@ GEMINI_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMI
 
 # Groq is temporarily unused (see chat() below) but left configured so it's a
 # one-line uncomment to bring back as a fallback provider.
-GROQ_API_KEY = = os.getenv("GROQ_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_MODEL = "openai/gpt-oss-120b"
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
