@@ -42,7 +42,13 @@ app = FastAPI(title="Bank Statement Analyser API")
 # falls back to the rule-based responder below, so the app still works
 # without a key.
 # ---------------------------------------------------------------------------
+<<<<<<< HEAD
 GROQ_API_KEY = ""  # os.environ.get("GROQ_API_KEY")
+=======
+# Load the API key from the environment (or a local .env file). Do NOT hardcode
+# real keys in source. See backend/.env.example for the expected variable name.
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+>>>>>>> 18a386c (Move API key configuration to .env)
 GROQ_MODEL = "openai/gpt-oss-120b"
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
@@ -220,7 +226,7 @@ def build_analysis_context(analysis: dict, message: str = "") -> str:
 
 async def call_groq(system_prompt: str, user_message: str) -> str:
     if not GROQ_API_KEY:
-        raise RuntimeError("GROQ_API_KEY is not configured")
+        raise RuntimeError("GROQ_API_KEY is not set. Please configure your .env file.")
 
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
