@@ -54,9 +54,10 @@ GEMINI_API_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMI
 
 # Groq is temporarily unused (see chat() below) but left configured so it's a
 # one-line uncomment to bring back as a fallback provider.
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GROQ_API_KEY =  os.getenv("GROQ_API_KEY")
 GROQ_MODEL = "openai/gpt-oss-120b"
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -240,16 +241,37 @@ async def call_gemini(system_prompt: str, user_message: str) -> str:
             json={
                 "systemInstruction": {"parts": [{"text": system_prompt}]},
                 "contents": [{"role": "user", "parts": [{"text": user_message}]}],
-                "generationConfig": {"temperature": 0.5, "maxOutputTokens": 1000},
+                "generationConfig": {
+                    "temperature": 0.5,
+                    # Raised from 1000 -> 2000: on gemini-2.5-flash, part of
+                    # maxOutputTokens is consumed by internal "thinking"
+                    # tokens before the visible reply is written, so 1000
+                    # was leaving too little room for the actual answer and
+                    # causing it to cut off mid-sentence.
+                    "maxOutputTokens": 2000,
+                    # Disable thinking entirely for this endpoint — we want
+                    # a fast, grounded chat reply, not a reasoning trace,
+                    # and this stops thinking tokens from eating into the
+                    # budget at all.
+                    "thinkingConfig": {"thinkingBudget": 0},
+                },
             },
         )
     resp.raise_for_status()
     data = resp.json()
 
     try:
-        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        candidate = data["candidates"][0]
+        return candidate["content"]["parts"][0]["text"].strip()
     except (KeyError, IndexError) as e:
-        raise RuntimeError(f"Unexpected Gemini API response format: {data}") from e
+        finish_reason = None
+        try:
+            finish_reason = data["candidates"][0].get("finishReason")
+        except (KeyError, IndexError):
+            pass
+        raise RuntimeError(
+            f"Unexpected Gemini API response format (finishReason={finish_reason}): {data}"
+        ) from e
 
 
 async def call_groq(system_prompt: str, user_message: str) -> str:
